@@ -6,7 +6,7 @@ source.dir = .
 source.include_exts = py,html,db
 source.exclude_dirs = .github,bin,.buildozer
 version = 0.1
-requirements = python3,flask,werkzeug,jinja2,markupsafe,itsdangerous,click,blinker,sqlite3
+requirements = python3,flask,sqlite3
 orientation = portrait
 fullscreen = 0
 
