@@ -21,20 +21,23 @@ jobs:
       - name: Install system packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y git zip unzip autoconf automake libtool libtool-bin \
+          sudo apt-get install -y \
+            git zip unzip autoconf automake libtool libtool-bin \
             libltdl-dev pkg-config zlib1g-dev libncurses-dev libtinfo6 cmake \
-            libffi-dev libssl-dev
+            libffi-dev libssl-dev build-essential patchelf libsqlite3-dev
 
-      - name: Cache Buildozer
+      - name: Cache Buildozer Global Directory
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.buildozer
-            .buildozer
+          path: ~/.buildozer
           key: buildozer-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            buildozer-
 
-      - name: Install Buildozer
-        run: pip install --upgrade pip buildozer "cython<3.1" virtualenv
+      - name: Install Buildozer and Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install --upgrade buildozer "cython<3.1" virtualenv setuptools wheel
 
       - name: Build APK
         run: |
