@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prompt Manager</title>
+    <!-- Bootstrap 5 + Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <style>
+        body { transition: background 0.3s, color 0.3s; }
+        .container { max-width: 900px; margin-top: 2rem; }
+
+        /* Toast container */
+        .toast-container { position: fixed; top: 1rem; right: 1rem; z-index: 1060; }
+
+        /* Cards */
+        .prompt-card {
+            transition: transform 0.15s, box-shadow 0.2s;
+            border-left: 4px solid #0d6efd;
+            cursor: pointer;
+        }
+        .prompt-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 0.5rem 1rem rgba(0,0,0,0.12);
+        }
+        .prompt-card .card-title {
+            font-weight: 600;
+            margin-bottom: 0; /* remove default margin */
+        }
+        /* By default, hide content and timestamp */
+        .prompt-card .card-text,
+        .prompt-card .timestamp,
+        .prompt-card .action-buttons {
+            display: none;
+        }
+        /* When expanded, show them */
+        .prompt-card.expanded .card-text,
+        .prompt-card.expanded .timestamp,
+        .prompt-card.expanded .action-buttons {
+            display: block;
+        }
+        /* But when editing, always show content and buttons */
+        .prompt-card.editing .card-text,
+        .prompt-card.editing .timestamp,
+        .prompt-card.editing .action-buttons {
+            display: block;
+        }
+        .prompt-card .timestamp { font-size: 0.75rem; color: var(--bs-secondary-color); }
+
+        /* Dark mode overrides */
+        [data-bs-theme="dark"] .prompt-card { border-left-color: #6ea8fe; }
+        [data-bs-theme="dark"] .prompt-card:hover { box-shadow: 0 0.5rem 1rem rgba(255,255,255,0.05); }
+
+        /* Editing state background */
+        .editing .card-body { background-color: var(--bs-warning-bg-subtle); }
+
+        /* Loading overlay */
+        .spinner-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.3);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+        }
+        .spinner-overlay.show { display: flex; }
+
+        /* Expand/collapse indicator */
+        .expand-indicator {
+            transition: transform 0.2s;
+        }
+        .expanded .expand-indicator {
+            transform: rotate(180deg);
+        }
+    </style>
+</head>
+<body>
+
+<!-- Loading Overlay -->
+<div class="spinner-overlay" id="loadingOverlay">
+    <div class="spinner-border text-light" style="width: 3rem; height: 3rem;" role="status">
+        <span class="visually-hidden">Loading...</span>
+    </div>
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<div class="container">
+    <!-- Header with theme toggle -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1><i class="bi bi-journal-text"></i> Prompt Manager</h1>
+        <button id="themeToggle" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-moon-fill" id="themeIcon"></i>
+        </button>
+    </div>
+
+    <!-- Add Prompt Form -->
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5 class="card-title"><i class="bi bi-plus-circle"></i> New Prompt</h5>
+            <form id="prompt-form">
+                <div class="mb-3">
+                    <label for="title-input" class="form-label">Title</label>
+                    <input type="text" class="form-control" id="title-input" placeholder="Enter title" required>
+                </div>
+                <div class="mb-3">
+                    <label for="content-input" class="form-label">Content</label>
+                    <textarea class="form-control" id="content-input" rows="3" placeholder="Write your prompt..." required></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary w-100">
+                    <i class="bi bi-save"></i> Save Prompt
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Toolbar: search & sort -->
+    <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+        <div class="flex-grow-1">
+            <div class="input-group">
+                <span class="input-group-text"><i class="bi bi-search"></i></span>
+                <input type="text" id="searchInput" class="form-control" placeholder="Filter prompts...">
+            </div>
+        </div>
+        <div>
+            <select id="sortSelect" class="form-select">
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+                <option value="alpha">Alphabetical (A–Z)</option>
+            </select>
+        </div>
+    </div>
+
+    <!-- Prompts List -->
+    <div id="prompts-list">
+        <p class="text-muted text-center">Loading prompts...</p>
+    </div>
+</div>
+
+<!-- Bootstrap JS -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+    (function() {
+        'use strict';
+
+        // DOM refs
+        const form = document.getElementById('prompt-form');
+        const titleInput = document.getElementById('title-input');
+        const contentInput = document.getElementById('content-input');
+        const promptsList = document.getElementById('prompts-list');
+        const searchInput = document.getElementById('searchInput');
+        const sortSelect = document.getElementById('sortSelect');
+        const themeToggle = document.getElementById('themeToggle');
+        const themeIcon = document.getElementById('themeIcon');
+        const loadingOverlay = document.getElementById('loadingOverlay');
+
+        let allPrompts = [];         // cache for filtering/sorting
+        let editMode = null;         // id of prompt being edited
+
+        // ---- Theme ----
+        function setTheme(theme) {
+            document.documentElement.setAttribute('data-bs-theme', theme);
+            localStorage.setItem('theme', theme);
+            themeIcon.className = theme === 'dark' ? 'bi bi-sun-fill' : 'bi bi-moon-fill';
+        }
+        const savedTheme = localStorage.getItem('theme') || 'light';
+        setTheme(savedTheme);
+        themeToggle.addEventListener('click', () => {
+            const current = document.documentElement.getAttribute('data-bs-theme');
+            setTheme(current === 'light' ? 'dark' : 'light');
+        });
+
+        // ---- Toast ----
+        function showToast(message, type = 'success') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast align-items-center text-bg-${type} border-0`;
+            toast.role = 'alert';
+            toast.innerHTML = `
+                <div class="d-flex">
+                    <div class="toast-body">${message}</div>
+                    <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+                </div>
+            `;
+            container.appendChild(toast);
+            const bsToast = new bootstrap.Toast(toast, { delay: 3000 });
+            bsToast.show();
+            toast.addEventListener('hidden.bs.toast', () => toast.remove());
+        }
+
+        // ---- Loading overlay ----
+        function setLoading(show) {
+            loadingOverlay.classList.toggle('show', show);
+        }
+
+        // ---- Render prompts (with filtering & sorting) ----
+        function renderPrompts(prompts) {
+            const search = searchInput.value.toLowerCase().trim();
+            const sort = sortSelect.value;
+
+            let filtered = prompts.filter(p =>
+                p.title.toLowerCase().includes(search) ||
+                p.content.toLowerCase().includes(search)
+            );
+
+            // Sort
+            if (sort === 'newest') {
+                filtered.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+            } else if (sort === 'oldest') {
+                filtered.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+            } else if (sort === 'alpha') {
+                filtered.sort((a, b) => a.title.localeCompare(b.title));
+            }
+
+            if (!filtered.length) {
+                promptsList.innerHTML = `<p class="text-muted text-center">No prompts match your criteria.</p>`;
+                return;
+            }
+
+            let html = '';
+            filtered.forEach(p => {
+                const date = new Date(p.timestamp);
+                const formattedDate = date.toLocaleString('en-US', {
+                    year: 'numeric', month: 'short', day: 'numeric',
+                    hour: '2-digit', minute: '2-digit'
+                });
+                const isEditing = (editMode === p.id);
+                // If editing, force expanded (via class) so we see the edit fields
+                const expandedClass = isEditing ? 'expanded' : '';
+                const editClass = isEditing ? 'editing' : '';
+                html += `
+                    <div class="card prompt-card mb-3 ${expandedClass} ${editClass}" data-id="${p.id}">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <div class="flex-grow-1 me-2">
+                                    ${isEditing ? `
+                                        <input type="text" class="form-control form-control-sm edit-title" value="${escapeHtml(p.title)}" placeholder="Title">
+                                        <textarea class="form-control form-control-sm mt-2 edit-content" rows="2">${escapeHtml(p.content)}</textarea>
+                                        <div class="mt-2">
+                                            <button class="btn btn-sm btn-success save-edit-btn" data-id="${p.id}"><i class="bi bi-check2"></i> Save</button>
+                                            <button class="btn btn-sm btn-secondary cancel-edit-btn" data-id="${p.id}"><i class="bi bi-x"></i> Cancel</button>
+                                        </div>
+                                    ` : `
+                                        <div class="d-flex align-items-center">
+                                            <h5 class="card-title">${escapeHtml(p.title)}</h5>
+                                            <span class="ms-2 expand-indicator"><i class="bi bi-chevron-down"></i></span>
+                                        </div>
+                                        <p class="card-text">${escapeHtml(p.content)}</p>
+                                        <small class="timestamp"><i class="bi bi-clock"></i> ${formattedDate}</small>
+                                    `}
+                                </div>
+                                ${!isEditing ? `
+                                    <div class="action-buttons d-flex gap-1">
+                                        <button class="btn btn-sm btn-outline-secondary copy-btn" data-id="${p.id}" title="Copy content"><i class="bi bi-clipboard"></i></button>
+                                        <button class="btn btn-sm btn-outline-secondary edit-btn" data-id="${p.id}" title="Edit"><i class="bi bi-pencil"></i></button>
+                                        <button class="btn btn-sm btn-outline-danger delete-btn" data-id="${p.id}" title="Delete"><i class="bi bi-trash"></i></button>
+                                    </div>
+                                ` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            promptsList.innerHTML = html;
+
+            // Attach events
+            // Card click to toggle expansion (but not if clicking a button or if editing)
+            document.querySelectorAll('.prompt-card').forEach(card => {
+                card.addEventListener('click', function(e) {
+                    // If the click is on a button or inside the edit area, ignore
+                    if (e.target.closest('button') || e.target.closest('.edit-title') || e.target.closest('.edit-content')) {
+                        return;
+                    }
+                    // If this card is in editing mode, ignore toggle (editing is always expanded)
+                    if (this.classList.contains('editing')) return;
+                    this.classList.toggle('expanded');
+                });
+            });
+
+            // Button events
+            document.querySelectorAll('.delete-btn').forEach(btn => btn.addEventListener('click', handleDelete));
+            document.querySelectorAll('.edit-btn').forEach(btn => btn.addEventListener('click', handleEdit));
+            document.querySelectorAll('.save-edit-btn').forEach(btn => btn.addEventListener('click', handleSaveEdit));
+            document.querySelectorAll('.cancel-edit-btn').forEach(btn => btn.addEventListener('click', handleCancelEdit));
+            document.querySelectorAll('.copy-btn').forEach(btn => btn.addEventListener('click', handleCopy));
+        }
+
+        // ---- Copy handler ----
+        async function handleCopy(e) {
+            e.stopPropagation(); // prevent card toggle
+            const id = parseInt(e.currentTarget.dataset.id);
+            const prompt = allPrompts.find(p => p.id === id);
+            if (!prompt) return;
+            try {
+                await navigator.clipboard.writeText(prompt.content);
+                showToast('Copied to clipboard!', 'success');
+            } catch (err) {
+                // Fallback
+                const textarea = document.createElement('textarea');
+                textarea.value = prompt.content;
+                document.body.appendChild(textarea);
+                textarea.select();
+                try {
+                    document.execCommand('copy');
+                    showToast('Copied to clipboard!', 'success');
+                } catch (fallbackErr) {
+                    showToast('Could not copy text', 'danger');
+                }
+                document.body.removeChild(textarea);
+            }
+        }
+
+        // ---- Helper: escape HTML ----
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // ---- Load prompts from server ----
+        async function loadPrompts() {
+            setLoading(true);
+            try {
+                const res = await fetch('/prompts');
+                if (!res.ok) throw new Error('Failed to fetch');
+                allPrompts = await res.json();
+                if (editMode && !allPrompts.some(p => p.id === editMode)) {
+                    editMode = null;
+                }
+                renderPrompts(allPrompts);
+            } catch (err) {
+                console.error(err);
+                showToast('Error loading prompts', 'danger');
+            } finally {
+                setLoading(false);
+            }
+        }
+
+        // ---- Delete ----
+        async function handleDelete(e) {
+            e.stopPropagation();
+            const id = e.currentTarget.dataset.id;
+            if (!confirm('Delete this prompt?')) return;
+            setLoading(true);
+            try {
+                const res = await fetch(`/prompts/${id}`, { method: 'DELETE' });
+                if (!res.ok) throw new Error('Delete failed');
+                showToast('Prompt deleted', 'success');
+                allPrompts = allPrompts.filter(p => p.id != id);
+                if (editMode == id) editMode = null;
+                renderPrompts(allPrompts);
+            } catch (err) {
+                showToast('Error deleting prompt', 'danger');
+            } finally {
+                setLoading(false);
+            }
+        }
+
+        // ---- Edit ----
+        function handleEdit(e) {
+            e.stopPropagation();
+            const id = parseInt(e.currentTarget.dataset.id);
+            editMode = id;
+            renderPrompts(allPrompts);
+            // Ensure the card is expanded (class will be added via isEditing logic)
+        }
+
+        async function handleSaveEdit(e) {
+            e.stopPropagation();
+            const id = parseInt(e.currentTarget.dataset.id);
+            const card = document.querySelector(`.prompt-card[data-id="${id}"]`);
+            const titleInput = card.querySelector('.edit-title');
+            const contentInput = card.querySelector('.edit-content');
+            const newTitle = titleInput.value.trim();
+            const newContent = contentInput.value.trim();
+
+            if (!newTitle || !newContent) {
+                showToast('Title and content cannot be empty', 'warning');
+                return;
+            }
+
+            setLoading(true);
+            try {
+                const res = await fetch(`/prompts/${id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: newTitle, content: newContent })
+                });
+                if (!res.ok) throw new Error('Update failed');
+                const updated = await res.json();
+                const idx = allPrompts.findIndex(p => p.id === id);
+                if (idx !== -1) allPrompts[idx] = updated;
+                editMode = null;
+                showToast('Prompt updated', 'success');
+                renderPrompts(allPrompts);
+            } catch (err) {
+                showToast('Error updating prompt', 'danger');
+            } finally {
+                setLoading(false);
+            }
+        }
+
+        function handleCancelEdit(e) {
+            e.stopPropagation();
+            const id = parseInt(e.currentTarget.dataset.id);
+            if (editMode === id) {
+                editMode = null;
+                renderPrompts(allPrompts);
+            }
+        }
+
+        // ---- Submit new prompt ----
+        async function handleSubmit(e) {
+            e.preventDefault();
+            const title = titleInput.value.trim();
+            const content = contentInput.value.trim();
+            if (!title || !content) {
+                showToast('Both fields are required', 'warning');
+                return;
+            }
+            setLoading(true);
+            try {
+                const res = await fetch('/prompts', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title, content })
+                });
+                if (!res.ok) throw new Error('Save failed');
+                const newPrompt = await res.json();
+                allPrompts.unshift(newPrompt);
+                showToast('Prompt saved', 'success');
+                titleInput.value = '';
+                contentInput.value = '';
+                renderPrompts(allPrompts);
+            } catch (err) {
+                showToast('Error saving prompt', 'danger');
+            } finally {
+                setLoading(false);
+            }
+        }
+
+        // ---- Event listeners for search & sort ----
+        searchInput.addEventListener('input', () => renderPrompts(allPrompts));
+        sortSelect.addEventListener('change', () => renderPrompts(allPrompts));
+
+        // ---- Initialise ----
+        form.addEventListener('submit', handleSubmit);
+        loadPrompts();
+    })();
+</script>
+</body>
+</html>
